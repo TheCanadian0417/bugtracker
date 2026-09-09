@@ -300,6 +300,15 @@ export default function BugTracker() {
     catch { return ""; }
   }, []);
 
+  /* Reps share one key, so the name lives in their browser. */
+  const [asName, setAsName] = useState(() => {
+    try { return localStorage.getItem("bt.name") || ""; } catch { return ""; }
+  });
+  const saveName = (n) => {
+    try { localStorage.setItem("bt.name", n); } catch { /* private mode */ }
+    setAsName(n);
+  };
+
   const demo = !API_URL;
   const [user, setUser] = useState(demo ? { name: "Hunter", role: "admin" } : null);
   const [meta, setMeta] = useState(DEMO_META);
@@ -313,34 +322,47 @@ export default function BugTracker() {
   const [alerts, setAlerts] = useState("unknown");
 
   const isAdmin = user?.role === "admin";
+  const canFile = isAdmin || user?.role === "reporter";
 
   const call = useCallback(async (action, payload) => {
     const res = await fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ k: accessKey, action, payload }),
+      body: JSON.stringify({ k: accessKey, as: asName, action, payload }),
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Request failed.");
     setTickets(data.tickets);
     setUpdates(data.updates);
     return data;
-  }, [accessKey]);
+  }, [accessKey, asName]);
+
+  const [needsName, setNeedsName] = useState(false);
 
   useEffect(() => {
     if (demo) return;
+    let cancelled = false;
     (async () => {
+      setLoading(true);
       try {
-        const res = await fetch(`${API_URL}?k=${encodeURIComponent(accessKey)}`);
+        const url = `${API_URL}?k=${encodeURIComponent(accessKey)}&as=${encodeURIComponent(asName)}`;
+        const res = await fetch(url);
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error);
+        if (cancelled) return;
+        if (!data.ok) {
+          /* Shared reporter key with no name stored yet. */
+          if (/name/i.test(data.error || "")) { setNeedsName(true); setFatal(""); return; }
+          throw new Error(data.error);
+        }
+        setNeedsName(false);
         setUser(data.user); setMeta(data.meta);
         setTickets(data.tickets); setUpdates(data.updates);
       } catch (err) {
-        setFatal(err.message || "Could not reach the backend.");
-      } finally { setLoading(false); }
+        if (!cancelled) setFatal(err.message || "Could not reach the backend.");
+      } finally { if (!cancelled) setLoading(false); }
     })();
-  }, [demo, accessKey]);
+    return () => { cancelled = true; };
+  }, [demo, accessKey, asName]);
 
   useEffect(() => {
     try { if ("Notification" in window) setAlerts(Notification.permission); }
@@ -375,6 +397,7 @@ export default function BugTracker() {
 
   const shown = filter === "all" ? buckets.open : buckets[filter] || [];
 
+  if (needsName) return <Frame><NamePrompt onSet={saveName} /></Frame>;
   if (loading) return <Frame><div className="bt-blank"><p>connecting…</p></div></Frame>;
   if (fatal) return (
     <Frame>
@@ -410,7 +433,7 @@ export default function BugTracker() {
               try { setAlerts(await Notification.requestPermission()); } catch { setAlerts("denied"); }
             }}>Enable alerts</button>
           )}
-          {isAdmin && (
+          {canFile && (
             <button className="bt-btn" onClick={() => { setComposing(!composing); setOpenId(null); }}>
               {composing ? "Cancel" : "New bug"}
             </button>
@@ -431,8 +454,8 @@ export default function BugTracker() {
         ))}
       </div>
 
-      {composing && isAdmin && (
-        <NewTicket meta={meta} onCancel={() => setComposing(false)}
+      {composing && canFile && (
+        <NewTicket meta={meta} isAdmin={isAdmin} onCancel={() => setComposing(false)}
           onSave={async (p) => { await call("createTicket", p); setComposing(false); setFilter("all"); }} />
       )}
 
@@ -442,7 +465,7 @@ export default function BugTracker() {
             <>
               <strong>No bugs logged yet</strong>
               <p>Add the ones you're already chasing. Each needs a follow-up date, and you can't log an update without setting the next one.</p>
-              {isAdmin && <button className="bt-btn" onClick={() => setComposing(true)}>New bug</button>}
+              {canFile && <button className="bt-btn" onClick={() => setComposing(true)}>New bug</button>}
             </>
           ) : (
             <p>
@@ -483,6 +506,25 @@ export default function BugTracker() {
         );
       })}
     </Frame>
+  );
+}
+
+function NamePrompt({ onSet }) {
+  const [n, setN] = useState("");
+  const ok = n.trim().length >= 2;
+  return (
+    <div className="bt-blank">
+      <strong>Who's filing?</strong>
+      <p>Your name goes on the bugs you report so we know who to ask. Stored in this browser — you'll only be asked once.</p>
+      <div className="bt-form" style={{ maxWidth: 320 }}>
+        <input className="bt-in" value={n} autoFocus placeholder="First and last name"
+          onChange={(e) => setN(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && ok) onSet(n.trim()); }} />
+        <div className="bt-act">
+          <button className="bt-btn" disabled={!ok} onClick={() => onSet(n.trim())}>Continue</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -619,7 +661,7 @@ function Detail({ ticket, meta, isAdmin, log, onSave }) {
 
 /* --------------------------------------------------------------- new ticket */
 
-function NewTicket({ meta, onCancel, onSave }) {
+function NewTicket({ meta, isAdmin, onCancel, onSave }) {
   const [f, setF] = useState({
     system: "", title: "", description: "", severity: "Medium",
     status: "New", vendorRef: "", vendorContact: "",
@@ -628,7 +670,7 @@ function NewTicket({ meta, onCancel, onSave }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const ready = f.title.trim().length > 3 && f.system.trim() && f.nextFollowup;
+  const ready = f.title.trim().length > 3 && f.system.trim() && (!isAdmin || f.nextFollowup);
 
   const save = async () => {
     setBusy(true); setErr("");
@@ -655,19 +697,19 @@ function NewTicket({ meta, onCancel, onSave }) {
               {meta.severities.map((o) => <option key={o}>{o}</option>)}
             </select>
           </div>
-          <div className="bt-field">
+          {isAdmin && <div className="bt-field">
             <label className="bt-lab" htmlFor="nt-status">status</label>
             <select id="nt-status" className="bt-sel" value={f.status} onChange={set("status")}>
               {meta.statuses.map((o) => <option key={o}>{o}</option>)}
             </select>
-          </div>
+          </div>}
         </div>
         <div className="bt-field">
           <label className="bt-lab" htmlFor="nt-desc">detail</label>
           <textarea id="nt-desc" className="bt-ta" value={f.description} onChange={set("description")}
             placeholder="Steps to reproduce, error text, who reported it." />
         </div>
-        <div className="bt-grid">
+        {isAdmin && <div className="bt-grid">
           <div className="bt-field">
             <label className="bt-lab" htmlFor="nt-opened">date reported</label>
             <input id="nt-opened" className="bt-in mono" type="date" max={meta.today}
@@ -685,13 +727,15 @@ function NewTicket({ meta, onCancel, onSave }) {
             <label className="bt-lab" htmlFor="nt-who">vendor contact</label>
             <input id="nt-who" className="bt-in" value={f.vendorContact} onChange={set("vendorContact")} />
           </div>
-        </div>
+        </div>}
         <div className="bt-act">
           <button className="bt-btn" disabled={!ready || busy} onClick={save}>
             {busy ? "Saving…" : "Open bug"}
           </button>
           <button className="bt-btn bt-btn-q" onClick={onCancel}>Cancel</button>
-          {!ready && <span className="bt-hint">summary, system and a follow-up date required</span>}
+          {!ready && <span className="bt-hint">
+            {isAdmin ? "summary, system and a follow-up date required" : "summary and system required"}
+          </span>}
           {err && <span className="bt-err">{err}</span>}
         </div>
       </div>
