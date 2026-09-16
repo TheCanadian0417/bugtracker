@@ -264,7 +264,7 @@ function urgencyOf(t, meta) {
   if (f && f < meta.today) return "overdue";
   if (f && f === meta.today) return "today";
   const age = daysAgo(t.last_update, meta.today);
-  if (age !== null && age >= meta.staleDays) return "overdue";
+  if (age !== null && age >= meta.staleDays) return "stale";
   if (t.status === "Awaiting vendor" || t.status === "Reported to vendor") return "waiting";
   return "ok";
 }
@@ -289,6 +289,7 @@ function ageLabel(t, meta, urgency) {
   }
   if (f && f === meta.today) return { text: "due today", late: "soon" };
   const age = daysAgo(t.last_update, meta.today);
+  if (urgency === "stale") return { text: `${age}d quiet`, late: "soon" };
   return { text: age === 0 ? "updated today" : `${age}d quiet`, late: "0" };
 }
 
@@ -370,14 +371,15 @@ export default function BugTracker() {
   }, []);
 
   const buckets = useMemo(() => {
-    const b = { overdue: [], today: [], waiting: [], open: [], closed: [] };
+    const b = { overdue: [], today: [], stale: [], waiting: [], open: [], closed: [] };
     tickets.forEach((t) => {
       const u = urgencyOf(t, meta);
       if (u === "closed") { b.closed.push(t); return; }
       b.open.push(t);
       if (u === "overdue") b.overdue.push(t);
       else if (u === "today") b.today.push(t);
-      else if (u === "waiting") b.waiting.push(t);
+      else if (u === "stale") b.stale.push(t);
+      if (t.status === "Awaiting vendor" || t.status === "Reported to vendor") b.waiting.push(t);
     });
     const rank = { Blocker: 0, High: 1, Medium: 2, Low: 3 };
     Object.values(b).forEach((list) =>
@@ -444,6 +446,7 @@ export default function BugTracker() {
       <div className="bt-tabs">
         {[["overdue", "Overdue", buckets.overdue.length],
           ["today", "Due today", buckets.today.length],
+          ["stale", "Gone quiet", buckets.stale.length],
           ["waiting", "With vendor", buckets.waiting.length],
           ["all", "All open", buckets.open.length],
           ["closed", "Closed", buckets.closed.length]].map(([key, label, n]) => (
@@ -469,7 +472,8 @@ export default function BugTracker() {
             </>
           ) : (
             <p>
-              {filter === "overdue" ? "Nothing overdue. Everything has a live follow-up date."
+              {filter === "overdue" ? "Nothing past its follow-up date."
+                : filter === "stale" ? `Nothing has gone ${meta.staleDays}+ days without an update.`
                 : filter === "closed" ? "No closed bugs yet."
                 : "Nothing in this view."}
             </p>
