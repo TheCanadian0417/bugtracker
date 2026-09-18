@@ -246,15 +246,6 @@ function addBusinessDays(fromISO, n) {
   return fmt(d);
 }
 
-function addCalendarDays(fromISO, n) {
-  const d = new Date(fromISO + "T12:00:00");
-  d.setDate(d.getDate() + n);
-  const day = d.getDay();
-  if (day === 6) d.setDate(d.getDate() + 2);
-  if (day === 0) d.setDate(d.getDate() + 1);
-  return fmt(d);
-}
-
 const daysAgo = (iso, today) =>
   !iso ? null : Math.round((new Date(today + "T12:00:00") - new Date(iso + "T12:00:00")) / 86400000);
 
@@ -572,11 +563,13 @@ function Detail({ ticket, meta, isAdmin, log, onSave }) {
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
+  /* All counted in business days, so no two chips can land on the same date.
+     5 and 10 business days fall on the same weekday one and two weeks out. */
   const quick = [
     ["tomorrow", nextBiz],
-    ["+3d", addCalendarDays(meta.today, 3)],
-    ["+1w", addCalendarDays(meta.today, 7)],
-    ["+2w", addCalendarDays(meta.today, 14)],
+    ["+3d", addBusinessDays(meta.today, 3)],
+    ["+1w", addBusinessDays(meta.today, 5)],
+    ["+2w", addBusinessDays(meta.today, 10)],
   ];
 
   return (
